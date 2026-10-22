@@ -1,0 +1,43 @@
+'use client';
+
+import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
+import { ArrowDownTrayIcon, ArrowLeftIcon, ArrowUpIcon, ArrowDownIcon, FilmIcon, PauseIcon, PlayIcon, PlusIcon, ScissorsIcon, TrashIcon } from '@heroicons/react/24/outline';
+
+type Clip = { id:string; name:string; url:string; duration:number; start:number; end:number; muted:boolean };
+
+export default function EditorPage(){
+ const [clips,setClips]=useState<Clip[]>([]); const [selected,setSelected]=useState<string|null>(null); const [playing,setPlaying]=useState(false); const [rendering,setRendering]=useState(false); const [status,setStatus]=useState('Upload your Flow MP4s to begin.');
+ const video=useRef<HTMLVideoElement>(null); const input=useRef<HTMLInputElement>(null);
+ const active=clips.find(c=>c.id===selected) || clips[0];
+ const total=useMemo(()=>clips.reduce((n,c)=>n+Math.max(0,c.end-c.start),0),[clips]);
+ useEffect(()=>()=>clips.forEach(c=>URL.revokeObjectURL(c.url)),[]);
+ function load(files:FileList|null){ if(!files)return; [...files].filter(f=>f.type.startsWith('video/')).forEach(file=>{const url=URL.createObjectURL(file); const probe=document.createElement('video'); probe.preload='metadata'; probe.src=url; probe.onloadedmetadata=()=>{const c={id:crypto.randomUUID(),name:file.name,url,duration:probe.duration,start:0,end:probe.duration,muted:false}; setClips(x=>[...x,c]); setSelected(x=>x||c.id); setStatus('Clips loaded locally — nothing is uploaded to a server.');};}); }
+ function patch(id:string,p:Partial<Clip>){setClips(x=>x.map(c=>c.id===id?{...c,...p}:c));}
+ function move(i:number,d:number){const j=i+d;if(j<0||j>=clips.length)return;const x=[...clips];[x[i],x[j]]=[x[j],x[i]];setClips(x);}
+ function remove(id:string){setClips(x=>x.filter(c=>c.id!==id));if(selected===id)setSelected(null);}
+ function play(){if(!video.current||!active)return; if(video.current.paused){video.current.currentTime=Math.max(active.start,Math.min(video.current.currentTime,active.end));video.current.play();setPlaying(true)}else{video.current.pause();setPlaying(false)}}
+ function time(){if(video.current&&active&&video.current.currentTime>=active.end){video.current.pause();video.current.currentTime=active.start;setPlaying(false)}}
+ async function exportVideo(){
+  if(!active||!video.current)return; setRendering(true); setStatus('Recording the selected trimmed clip… keep this tab open.');
+  try{const v=video.current; v.pause(); v.currentTime=active.start; await new Promise<void>(r=>{const f=()=>{v.removeEventListener('seeked',f);r()};v.addEventListener('seeked',f)});
+   const stream=(v as HTMLVideoElement & {captureStream?:()=>MediaStream}).captureStream?.(); if(!stream) throw new Error('This browser does not support local video capture. Use Chrome or Edge.');
+   const chunks:BlobPart[]=[]; const rec=new MediaRecorder(stream,{mimeType:MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')?'video/webm;codecs=vp9,opus':'video/webm'}); rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+   const done=new Promise<void>(r=>rec.onstop=()=>r()); rec.start(250); await v.play(); await new Promise<void>(r=>{const tick=()=>{if(v.currentTime>=active.end||v.ended){v.pause();r()}else requestAnimationFrame(tick)};tick()}); rec.stop(); await done;
+   const blob=new Blob(chunks,{type:'video/webm'}); const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`shortforge-${active.name.replace(/\.[^.]+$/,'')}.webm`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);setStatus('Export complete. Your trimmed clip was downloaded.');
+  }catch(e){setStatus(e instanceof Error?e.message:'Export failed.');}finally{setRendering(false)}
+ }
+ const onDrop=(e:DragEvent)=>{e.preventDefault();load(e.dataTransfer.files)};
+ return <main className="editor-shell">
+  <header className="editor-top"><Link href="/" className="back"><ArrowLeftIcon/>ShortForge</Link><div><strong>Browser Editor</strong><span>{clips.length} clips · {total.toFixed(1)}s timeline</span></div><button className="export" disabled={!active||rendering} onClick={exportVideo}><ArrowDownTrayIcon/>{rendering?'Exporting…':'Export selected'}</button></header>
+  <section className="editor-grid">
+   <aside className="media-panel"><div className="panel-title"><div><span>MEDIA</span><strong>Scene bin</strong></div><button onClick={()=>input.current?.click()}><PlusIcon/></button></div><input ref={input} hidden multiple type="file" accept="video/*" onChange={(e:ChangeEvent<HTMLInputElement>)=>load(e.target.files)}/>
+    {clips.length===0?<div className="drop" onDragOver={e=>e.preventDefault()} onDrop={onDrop} onClick={()=>input.current?.click()}><FilmIcon/><strong>Drop Flow clips here</strong><span>MP4, WebM, MOV</span></div>:<div className="clip-list">{clips.map((c,i)=><button key={c.id} className={active?.id===c.id?'clip active':'clip'} onClick={()=>setSelected(c.id)}><div className="clip-num">{i+1}</div><div><strong>{c.name}</strong><span>{(c.end-c.start).toFixed(1)} sec</span></div></button>)}</div>}
+   </aside>
+   <section className="preview-panel"><div className="preview-stage">{active?<video key={active.id} ref={video} src={active.url} muted={active.muted} playsInline onTimeUpdate={time} onEnded={()=>setPlaying(false)}/>:<div className="empty-preview"><FilmIcon/><strong>Your 9:16 preview</strong><span>Upload a clip to start cutting.</span></div>}</div><div className="transport"><button disabled={!active} onClick={play}>{playing?<PauseIcon/>:<PlayIcon/>}</button><span>{active?`${active.start.toFixed(1)}s — ${active.end.toFixed(1)}s`:'0.0s'}</span><div className="transport-line"><i style={{width:active?`${Math.max(4,(active.end-active.start)/Math.max(active.duration,1)*100)}%`:'0%'}}/></div></div></section>
+   <aside className="inspector"><div className="panel-title"><div><span>INSPECTOR</span><strong>Trim clip</strong></div><ScissorsIcon/></div>{active?<><label>Start <b>{active.start.toFixed(2)}s</b><input type="range" min="0" max={Math.max(0,active.end-.05)} step=".05" value={active.start} onChange={e=>patch(active.id,{start:+e.target.value})}/></label><label>End <b>{active.end.toFixed(2)}s</b><input type="range" min={active.start+.05} max={active.duration} step=".05" value={active.end} onChange={e=>patch(active.id,{end:+e.target.value})}/></label><label className="toggle"><input type="checkbox" checked={active.muted} onChange={e=>patch(active.id,{muted:e.target.checked})}/>Mute Flow audio</label><p>Tip: cut fake text, flash frames, repeated narration and awkward zooms here.</p></>:<p>Select a clip to edit it.</p>}</aside>
+  </section>
+  <section className="timeline"><div className="timeline-head"><div><span>TIMELINE</span><strong>Assembly</strong></div><button onClick={()=>input.current?.click()}><PlusIcon/>Add clips</button></div><div className="tracks"><div className="track-label">VIDEO</div><div className="track-clips">{clips.length?clips.map((c,i)=><div className={active?.id===c.id?'timeline-clip active':'timeline-clip'} key={c.id} onClick={()=>setSelected(c.id)} style={{flexGrow:Math.max(1,c.end-c.start)}}><span>{i+1}</span><strong>{c.name.replace(/\.[^.]+$/,'')}</strong><small>{(c.end-c.start).toFixed(1)}s</small><div className="clip-actions"><button title="Move earlier" onClick={e=>{e.stopPropagation();move(i,-1)}}><ArrowUpIcon/></button><button title="Move later" onClick={e=>{e.stopPropagation();move(i,1)}}><ArrowDownIcon/></button><button title="Delete" onClick={e=>{e.stopPropagation();remove(c.id)}}><TrashIcon/></button></div></div>):<div className="timeline-empty">Your scenes will appear here in order.</div>}</div></div></section>
+  <footer className="editor-status"><span className="status-dot"/>{status}<b>Files stay in your browser.</b></footer>
+ </main>
+}
